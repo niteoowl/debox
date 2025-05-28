@@ -21,7 +21,7 @@ const discussionTypes = [
   {
     value: "pros-cons" as DiscussionType,
     label: "찬반토론",
-    description: "찬성과 반대 입장으로 나뉘어 구조화된 토론을 진행합니다.",
+    description: "체계적인 단계별 토론 (입론 → 작전타임 → 반론 → 최종변론 → 투표)",
   },
   {
     value: "free" as DiscussionType,
@@ -31,7 +31,7 @@ const discussionTypes = [
   {
     value: "one-on-one" as DiscussionType,
     label: "1:1 대결",
-    description: "두 명이 서로 다른 입장에서 교차 반론을 진행합니다.",
+    description: "두 명이 서로 다른 입장에서 체계적으로 토론합니다.",
   },
 ]
 
@@ -45,7 +45,7 @@ export default function CreateDiscussionPage() {
   const [type, setType] = useState<DiscussionType>("pros-cons")
   const [category, setCategory] = useState("")
   const [allowObservers, setAllowObservers] = useState(true)
-  const [timeLimit, setTimeLimit] = useState<number | undefined>(undefined)
+  const [phaseTimeLimit, setPhaseTimeLimit] = useState(5) // 각 단계별 시간 제한
   const [maxParticipants, setMaxParticipants] = useState<number | undefined>(undefined)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -63,23 +63,23 @@ export default function CreateDiscussionPage() {
     setIsSubmitting(true)
 
     try {
-      // 서버 타임스탬프 사용
       const discussionData = {
         title,
         description,
         type,
         category,
         allowObservers,
-        timeLimit: timeLimit || null,
+        phaseTimeLimit, // 각 단계별 시간 제한
         maxParticipants: maxParticipants || null,
         status: "waiting",
+        currentPhase: "waiting", // 초기 단계
         createdBy: user.uid,
-        createdAt: serverTimestamp(), // 클라이언트 시간 대신 서버 타임스탬프 사용
+        createdAt: serverTimestamp(),
         participants: [],
         observers: [],
+        phaseMessages: {}, // 각 단계별 메시지 저장
       }
 
-      // 콘솔에 데이터 출력 (디버깅용)
       console.log("Creating discussion with data:", discussionData)
 
       const docRef = await addDoc(collection(db, "discussions"), discussionData)
@@ -94,7 +94,6 @@ export default function CreateDiscussionPage() {
     } catch (error: any) {
       console.error("Error creating discussion:", error)
 
-      // 더 자세한 오류 메시지 표시
       let errorMessage = "다시 시도해주세요."
       if (error.code === "permission-denied") {
         errorMessage = "권한이 없습니다. 로그인 상태를 확인해주세요."
@@ -117,7 +116,7 @@ export default function CreateDiscussionPage() {
       <Card className="max-w-2xl mx-auto">
         <CardHeader>
           <CardTitle>새 토론 만들기</CardTitle>
-          <CardDescription>토론 주제와 형식을 설정하여 새로운 토론을 시작하세요.</CardDescription>
+          <CardDescription>체계적인 토론 시스템으로 의견을 나누어보세요</CardDescription>
         </CardHeader>
 
         <form onSubmit={handleSubmit}>
@@ -183,6 +182,23 @@ export default function CreateDiscussionPage() {
               </Select>
             </div>
 
+            <div className="space-y-2">
+              <Label htmlFor="phase-time-limit">단계별 시간 제한 (분)</Label>
+              <Select value={phaseTimeLimit.toString()} onValueChange={(value) => setPhaseTimeLimit(Number(value))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="3">3분</SelectItem>
+                  <SelectItem value="5">5분</SelectItem>
+                  <SelectItem value="7">7분</SelectItem>
+                  <SelectItem value="10">10분</SelectItem>
+                  <SelectItem value="15">15분</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-muted-foreground">각 토론 단계(입론, 반론, 최종변론 등)의 시간 제한입니다.</p>
+            </div>
+
             <div className="flex items-center space-x-2">
               <Switch id="allow-observers" checked={allowObservers} onCheckedChange={setAllowObservers} />
               <Label htmlFor="allow-observers">참관자 허용</Label>
@@ -203,18 +219,22 @@ export default function CreateDiscussionPage() {
               </div>
             )}
 
-            <div className="space-y-2">
-              <Label htmlFor="time-limit">제한 시간 (분, 선택사항)</Label>
-              <Input
-                id="time-limit"
-                type="number"
-                min="5"
-                max="180"
-                placeholder="제한 없음"
-                value={timeLimit || ""}
-                onChange={(e) => setTimeLimit(e.target.value ? Number(e.target.value) : undefined)}
-              />
-            </div>
+            {type === "pros-cons" && (
+              <div className="p-4 bg-muted rounded-lg">
+                <h4 className="font-medium mb-2">찬반토론 진행 순서</h4>
+                <ol className="text-sm text-muted-foreground space-y-1">
+                  <li>1. 찬성 측 입론 ({phaseTimeLimit}분)</li>
+                  <li>2. 반대 측 입론 ({phaseTimeLimit}분)</li>
+                  <li>3. 찬성 팀 작전타임 ({phaseTimeLimit}분)</li>
+                  <li>4. 반대 팀 작전타임 ({phaseTimeLimit}분)</li>
+                  <li>5. 찬성 측 반론 ({phaseTimeLimit}분)</li>
+                  <li>6. 반대 측 반론 ({phaseTimeLimit}분)</li>
+                  <li>7. 찬성 측 최종변론 ({phaseTimeLimit}분)</li>
+                  <li>8. 반대 측 최종변론 ({phaseTimeLimit}분)</li>
+                  <li>9. 참관자 투표 및 결과 발표</li>
+                </ol>
+              </div>
+            )}
           </CardContent>
 
           <CardFooter className="flex justify-between">
