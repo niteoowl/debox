@@ -14,13 +14,24 @@ const firebaseConfig = {
 }
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig)
-export const auth = getAuth(app)
-export const db = getFirestore(app)
+let app
+let auth
+let db
+let analytics = null
 
-// Analytics는 클라이언트에서만 초기화
-let analytics: any = null
-if (typeof window !== "undefined") {
-  analytics = getAnalytics(app)
+try {
+  app = initializeApp(firebaseConfig)
+  auth = getAuth(app)
+  db = getFirestore(app)
+
+  // Analytics는 클라이언트에서만 초기화
+  if (typeof window !== "undefined") {
+    analytics = getAnalytics(app)
+  }
+
+  console.log("Firebase initialized successfully")
+} catch (error) {
+  console.error("Firebase initialization error:", error)
 }
-export { analytics }
+
+export { auth, db, analytics }
