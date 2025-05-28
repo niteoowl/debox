@@ -13,11 +13,12 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { useToast } from "@/hooks/use-toast"
 import { Users, Eye, Clock, Send, ThumbsUp, ThumbsDown } from "lucide-react"
 import type { Discussion, Message, ParticipantRole } from "@/types/discussion"
+import Link from "next/link"
 
 interface DiscussionRoomProps {
   discussion: Discussion
   messages: Message[]
-  currentUser: User
+  currentUser: User | null
 }
 
 export default function DiscussionRoom({ discussion, messages, currentUser }: DiscussionRoomProps) {
@@ -25,6 +26,137 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   const [selectedRole, setSelectedRole] = useState<ParticipantRole | null>(null)
   const [finalVote, setFinalVote] = useState<"pros" | "cons" | "draw" | null>(null)
   const { toast } = useToast()
+
+  // 로그인하지 않은 사용자 처리
+  if (!currentUser) {
+    return (
+      <div className="container mx-auto py-8 px-4">
+        <Card className="mb-6">
+          <CardHeader>
+            <div className="flex justify-between items-start">
+              <div>
+                <CardTitle className="text-2xl">{discussion.title}</CardTitle>
+                <CardDescription className="mt-2">{discussion.description}</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Badge variant={discussion.status === "active" ? "default" : "secondary"}>
+                  {discussion.status === "waiting" ? "대기중" : discussion.status === "active" ? "진행중" : "종료됨"}
+                </Badge>
+                <Badge variant="outline">{discussion.type}</Badge>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 mt-4 text-sm text-muted-foreground">
+              <div className="flex items-center gap-1">
+                <Users className="h-4 w-4" />
+                <span>참여자 {discussion.participants.length}명</span>
+              </div>
+              {discussion.allowObservers && (
+                <div className="flex items-center gap-1">
+                  <Eye className="h-4 w-4" />
+                  <span>참관자 {discussion.observers.length}명</span>
+                </div>
+              )}
+              {discussion.timeLimit && (
+                <div className="flex items-center gap-1">
+                  <Clock className="h-4 w-4" />
+                  <span>{discussion.timeLimit}분 제한</span>
+                </div>
+              )}
+            </div>
+          </CardHeader>
+        </Card>
+
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            <div className="text-center space-y-4">
+              <p className="text-muted-foreground">토론에 참여하려면 로그인이 필요합니다</p>
+              <Link href="/auth">
+                <Button>로그인 / 회원가입</Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 메시지는 읽기 전용으로 표시 */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <div className="lg:col-span-3">
+            <Card>
+              <CardHeader>
+                <CardTitle>토론 내용</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-96">
+                  <div className="space-y-4">
+                    {messages.map((message) => (
+                      <div key={message.id} className="flex items-start gap-3">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback>{message.username[0]}</AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{message.username}</span>
+                            <Badge
+                              variant={
+                                message.role === "pros"
+                                  ? "default"
+                                  : message.role === "cons"
+                                    ? "destructive"
+                                    : "secondary"
+                              }
+                              className="text-xs"
+                            >
+                              {message.role === "pros" ? "찬성" : message.role === "cons" ? "반대" : "참여자"}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">
+                              {message.timestamp?.toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <p className="mt-1">{message.content}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>참여자</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {discussion.participants.map((participant) => (
+                    <div key={participant.userId} className="flex items-center gap-2">
+                      <Avatar className="h-6 w-6">
+                        <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                      </Avatar>
+                      <span className="text-sm">{participant.username}</span>
+                      <Badge
+                        variant={
+                          participant.role === "pros"
+                            ? "default"
+                            : participant.role === "cons"
+                              ? "destructive"
+                              : "secondary"
+                        }
+                        className="text-xs"
+                      >
+                        {participant.role === "pros" ? "찬성" : participant.role === "cons" ? "반대" : "참여자"}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const currentParticipant = discussion.participants.find((p) => p.userId === currentUser.uid)
   const isObserver = discussion.observers.includes(currentUser.uid)

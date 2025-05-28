@@ -83,12 +83,12 @@ export default function Navbar() {
             </DropdownMenu>
           ) : (
             <>
-              <Link href="/login">
+              <Link href="/auth">
                 <Button variant="outline" size="sm">
                   로그인
                 </Button>
               </Link>
-              <Link href="/register">
+              <Link href="/auth">
                 <Button size="sm">회원가입</Button>
               </Link>
             </>
@@ -129,12 +129,12 @@ export default function Navbar() {
                 </Button>
               ) : (
                 <>
-                  <Link href="/login" className="flex-1">
+                  <Link href="/auth" className="flex-1">
                     <Button variant="outline" className="w-full">
                       로그인
                     </Button>
                   </Link>
-                  <Link href="/register" className="flex-1">
+                  <Link href="/auth" className="flex-1">
                     <Button className="w-full">회원가입</Button>
                   </Link>
                 </>

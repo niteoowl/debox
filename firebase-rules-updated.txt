@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 사용자 문서 규칙
+    match /users/{userId} {
+      // 사용자는 자신의 문서만 읽고 쓸 수 있음
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // 토론 문서 규칙
+    match /discussions/{discussionId} {
+      // 모든 사용자가 토론을 읽을 수 있음 (비로그인 포함)
+      allow read: if true;  // ✅ 변경: 모든 사용자가 읽기 가능
+      
+      // 토론 생성은 인증된 사용자만 가능
+      allow create: if request.auth != null 
+        && request.auth.uid == request.resource.data.createdBy;
+      
+      // 토론 수정은 생성자만 가능 (참여자/참관자 추가, 상태 변경 등)
+      allow update: if request.auth != null 
+        && (
+          // 생성자가 토론을 수정하는 경우
+          request.auth.uid == resource.data.createdBy
+          ||
+          // 사용자가 자신을 참여자로 추가하는 경우
+          (
+            request.auth.uid != resource.data.createdBy
+            && onlyAddingParticipantOrObserver()
+          )
+        );
+      
+      // 토론 삭제는 생성자만 가능
+      allow delete: if request.auth != null 
+        && request.auth.uid == resource.data.createdBy;
+      
+      // 참여자나 참관자 추가만 허용하는 함수
+      function onlyAddingParticipantOrObserver() {
+        let currentData = resource.data;
+        let newData = request.resource.data;
+        
+        return (
+          // 기본 필드들은 변경되지 않음
+          newData.title == currentData.title
+          && newData.description == currentData.description
+          && newData.type == currentData.type
+          && newData.createdBy == currentData.createdBy
+          && newData.createdAt == currentData.createdAt
+          && (
+            // 참여자 목록에 자신을 추가하거나
+            (
+              newData.participants.size() == currentData.participants.size() + 1
+              && newData.observers == currentData.observers
+            )
+            ||
+            // 참관자 목록에 자신을 추가하거나
+            (
+              newData.observers.size() == currentData.observers.size() + 1
+              && newData.participants == currentData.participants
+            )
+            ||
+            // 최종 투표를 추가하는 경우
+            (
+              newData.participants == currentData.participants
+              && newData.observers == currentData.observers
+              && newData.finalVotes.size() > currentData.finalVotes.size()
+            )
+          )
+        );
+      }
+    }
+    
+    // 메시지 문서 규칙
+    match /messages/{messageId} {
+      // 모든 사용자가 메시지를 읽을 수 있음 (비로그인 포함)
+      allow read: if true;  // ✅ 변경: 모든 사용자가 읽기 가능
+      
+      // 메시지 작성은 인증된 사용자만 가능하고, 자신의 userId로만 작성 가능
+      allow create: if request.auth != null 
+        && request.auth.uid == request.resource.data.userId;
+      
+      // 메시지 수정/삭제는 작성자만 가능
+      allow update, delete: if request.auth != null 
+        && request.auth.uid == resource.data.userId;
+    }
+    
+    // 기본적으로 다른 모든 접근은 거부
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { collection, addDoc } from "firebase/firestore"
+import { collection, addDoc, serverTimestamp } from "firebase/firestore"
 import { db } from "@/lib/firebase"
 import { useAuth } from "@/hooks/useAuth"
 import { Button } from "@/components/ui/button"
@@ -51,11 +51,19 @@ export default function CreateDiscussionPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!user) return
+    if (!user) {
+      toast({
+        title: "로그인이 필요합니다",
+        description: "토론을 생성하려면 먼저 로그인해주세요.",
+        variant: "destructive",
+      })
+      return
+    }
 
     setIsSubmitting(true)
 
     try {
+      // 서버 타임스탬프 사용
       const discussionData = {
         title,
         description,
@@ -66,12 +74,16 @@ export default function CreateDiscussionPage() {
         maxParticipants: maxParticipants || null,
         status: "waiting",
         createdBy: user.uid,
-        createdAt: new Date(),
+        createdAt: serverTimestamp(), // 클라이언트 시간 대신 서버 타임스탬프 사용
         participants: [],
         observers: [],
       }
 
+      // 콘솔에 데이터 출력 (디버깅용)
+      console.log("Creating discussion with data:", discussionData)
+
       const docRef = await addDoc(collection(db, "discussions"), discussionData)
+      console.log("Document written with ID: ", docRef.id)
 
       toast({
         title: "토론이 생성되었습니다!",
@@ -79,11 +91,20 @@ export default function CreateDiscussionPage() {
       })
 
       router.push(`/discussion/${docRef.id}`)
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error creating discussion:", error)
+
+      // 더 자세한 오류 메시지 표시
+      let errorMessage = "다시 시도해주세요."
+      if (error.code === "permission-denied") {
+        errorMessage = "권한이 없습니다. 로그인 상태를 확인해주세요."
+      } else if (error.message) {
+        errorMessage = error.message
+      }
+
       toast({
         title: "토론 생성 실패",
-        description: "다시 시도해주세요.",
+        description: errorMessage,
         variant: "destructive",
       })
     } finally {

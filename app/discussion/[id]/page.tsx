@@ -16,7 +16,7 @@ export default function DiscussionPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!id || !user) return
+    if (!id) return
 
     // 토론 정보 실시간 구독
     const discussionRef = doc(db, "discussions", id as string)
@@ -54,7 +54,7 @@ export default function DiscussionPage() {
       unsubscribeDiscussion()
       unsubscribeMessages()
     }
-  }, [id, user])
+  }, [id])
 
   if (loading) {
     return (
@@ -72,5 +72,5 @@ export default function DiscussionPage() {
     )
   }
 
-  return <DiscussionRoom discussion={discussion} messages={messages} currentUser={user!} />
+  return <DiscussionRoom discussion={discussion} messages={messages} currentUser={user} />
 }

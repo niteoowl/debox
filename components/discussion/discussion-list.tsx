@@ -8,7 +8,7 @@ import { useAuth } from "@/hooks/useAuth"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Users, Eye, Clock, Trophy } from "lucide-react"
+import { Users, Eye, Clock, Trophy, AlertCircle } from "lucide-react"
 import type { Discussion } from "@/types/discussion"
 
 const discussionTypeLabels = {
@@ -26,22 +26,32 @@ const statusLabels = {
 export default function DiscussionList() {
   const [discussions, setDiscussions] = useState<Discussion[]>([])
   const [loading, setLoading] = useState(true)
-  const { user, logout } = useAuth()
+  const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     const q = query(collection(db, "discussions"), orderBy("createdAt", "desc"))
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const discussionData = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate(),
-        endedAt: doc.data().endedAt?.toDate(),
-      })) as Discussion[]
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const discussionData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate(),
+          endedAt: doc.data().endedAt?.toDate(),
+        })) as Discussion[]
 
-      setDiscussions(discussionData)
-      setLoading(false)
-    })
+        setDiscussions(discussionData)
+        setLoading(false)
+        setError(null)
+      },
+      (error) => {
+        console.error("Firestore error:", error)
+        setError("데이터를 불러오는 중 오류가 발생했습니다. Firebase 규칙을 확인해주세요.")
+        setLoading(false)
+      },
+    )
 
     return unsubscribe
   }, [])
@@ -54,6 +64,19 @@ export default function DiscussionList() {
     )
   }
 
+  if (error) {
+    return (
+      <div className="container mx-auto py-8 px-4">
+        <div className="flex flex-col items-center justify-center py-12">
+          <AlertCircle className="h-12 w-12 text-red-500 mb-4" />
+          <h2 className="text-xl font-semibold mb-2">데이터 로딩 오류</h2>
+          <p className="text-muted-foreground text-center mb-4">{error}</p>
+          <Button onClick={() => window.location.reload()}>다시 시도</Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="container mx-auto py-8 px-4">
       <div className="flex justify-between items-center mb-8">
@@ -62,18 +85,24 @@ export default function DiscussionList() {
           <p className="text-muted-foreground mt-2">다양한 형태의 토론에 참여해보세요</p>
         </div>
         <div className="flex gap-2">
-          <Link href="/create">
-            <Button>새 토론 만들기</Button>
-          </Link>
+          {user ? (
+            <Link href="/create">
+              <Button>새 토론 만들기</Button>
+            </Link>
+          ) : (
+            <div className="text-sm text-muted-foreground">토론을 만들려면 로그인이 필요합니다</div>
+          )}
         </div>
       </div>
 
       {discussions.length === 0 ? (
         <div className="text-center py-12">
           <p className="text-muted-foreground mb-4">아직 토론이 없습니다.</p>
-          <Link href="/create">
-            <Button>첫 번째 토론을 만들어보세요</Button>
-          </Link>
+          {user && (
+            <Link href="/create">
+              <Button>첫 번째 토론을 만들어보세요</Button>
+            </Link>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
