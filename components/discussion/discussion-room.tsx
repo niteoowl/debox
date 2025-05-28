@@ -72,11 +72,16 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   const [isTyping, setIsTyping] = useState(false)
   const { toast } = useToast()
 
-  // 단계별 타이머
+  // 기본값 설정 (기존 데이터 호환성)
+  const currentPhase = discussion.currentPhase || "waiting"
+  const phaseTimeLimit = discussion.phaseTimeLimit || 5 // 기본 5분
+  const isStructuredDebate = discussion.type === "pros-cons" && discussion.currentPhase // 체계적 토론 여부
+
+  // 단계별 타이머 (체계적 토론일 때만)
   useEffect(() => {
-    if (discussion.currentPhase !== "waiting" && discussion.currentPhase !== "ended" && discussion.phaseStartTime) {
+    if (isStructuredDebate && currentPhase !== "waiting" && currentPhase !== "ended" && discussion.phaseStartTime) {
       const phaseStartTime = discussion.phaseStartTime.getTime()
-      const phaseDuration = discussion.phaseTimeLimit * 60 * 1000
+      const phaseDuration = phaseTimeLimit * 60 * 1000
       const phaseEndTime = phaseStartTime + phaseDuration
 
       const timer = setInterval(() => {
@@ -84,14 +89,14 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
         const remaining = Math.max(0, phaseEndTime - now)
         setPhaseTimeRemaining(remaining)
 
-        if (remaining === 0 && discussion.currentPhase !== "ended") {
+        if (remaining === 0 && currentPhase !== "ended") {
           handleNextPhase()
         }
       }, 1000)
 
       return () => clearInterval(timer)
     }
-  }, [discussion.currentPhase, discussion.phaseStartTime, discussion.phaseTimeLimit])
+  }, [currentPhase, discussion.phaseStartTime, phaseTimeLimit, isStructuredDebate])
 
   // 로그인하지 않은 사용자 처리
   if (!currentUser) {
@@ -102,15 +107,20 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   const isObserver = discussion.observers.includes(currentUser.uid)
   const isParticipant = !!currentParticipant
   const isCreator = discussion.createdBy === currentUser.uid
-  const canJoin = !isParticipant && !isObserver && discussion.currentPhase === "waiting"
+  const canJoin = !isParticipant && !isObserver && discussion.status === "waiting"
   const canObserve = !isParticipant && !isObserver && discussion.allowObservers
 
   // 현재 단계에서 메시지를 보낼 수 있는지 확인
   const canSendMessage = () => {
-    if (!isParticipant || discussion.currentPhase === "waiting" || discussion.currentPhase === "ended") return false
+    if (!isParticipant || discussion.status !== "active") return false
+
+    // 체계적 토론이 아닌 경우 (기존 방식)
+    if (!isStructuredDebate) {
+      return true
+    }
 
     const userRole = currentParticipant?.role
-    const phase = discussion.currentPhase
+    const phase = currentPhase
 
     // 작전타임은 해당 팀만 참여 가능
     if (phase === "strategy_pros" && userRole === "pros") return true
@@ -138,13 +148,13 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   }
 
   const handleStartDiscussion = async () => {
-    if (!isCreator || discussion.currentPhase !== "waiting") return
+    if (!isCreator || discussion.status !== "waiting") return
 
-    // 최소 참여자 확인 (찬반 각각 1명씩)
+    // 최소 참여자 확인
     const prosCount = discussion.participants.filter((p) => p.role === "pros").length
     const consCount = discussion.participants.filter((p) => p.role === "cons").length
 
-    if (prosCount === 0 || consCount === 0) {
+    if (discussion.type === "pros-cons" && (prosCount === 0 || consCount === 0)) {
       toast({
         title: "토론을 시작할 수 없습니다",
         description: "찬성과 반대 측에 각각 최소 1명의 참여자가 필요합니다.",
@@ -153,17 +163,33 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
       return
     }
 
-    try {
-      await updateDoc(doc(db, "discussions", discussion.id), {
-        status: "active",
-        currentPhase: "opening_pros",
-        startedAt: serverTimestamp(),
-        phaseStartTime: serverTimestamp(),
+    if (discussion.participants.length === 0) {
+      toast({
+        title: "토론을 시작할 수 없습니다",
+        description: "최소 1명의 참여자가 필요합니다.",
+        variant: "destructive",
       })
+      return
+    }
+
+    try {
+      const updateData: any = {
+        status: "active",
+        startedAt: serverTimestamp(),
+      }
+
+      // 체계적 토론인 경우에만 단계 설정
+      if (discussion.type === "pros-cons") {
+        updateData.currentPhase = "opening_pros"
+        updateData.phaseStartTime = serverTimestamp()
+        updateData.phaseTimeLimit = phaseTimeLimit
+      }
+
+      await updateDoc(doc(db, "discussions", discussion.id), updateData)
 
       toast({
         title: "토론이 시작되었습니다!",
-        description: "찬성 측 입론부터 시작합니다.",
+        description: discussion.type === "pros-cons" ? "찬성 측 입론부터 시작합니다." : "자유롭게 토론해보세요.",
       })
     } catch (error) {
       console.error("Error starting discussion:", error)
@@ -176,7 +202,7 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   }
 
   const handleNextPhase = async () => {
-    if (!isCreator) return
+    if (!isCreator || !isStructuredDebate) return
 
     const phaseOrder: DebatePhase[] = [
       "opening_pros",
@@ -191,7 +217,7 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
       "ended",
     ]
 
-    const currentIndex = phaseOrder.indexOf(discussion.currentPhase)
+    const currentIndex = phaseOrder.indexOf(currentPhase)
     const nextPhase = phaseOrder[currentIndex + 1]
 
     if (!nextPhase) return
@@ -244,7 +270,9 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
 
       toast({
         title: "토론에 참여했습니다!",
-        description: `${role === "pros" ? "찬성" : "반대"} 팀${isTeamLeader ? " 리더" : ""}로 참여합니다.`,
+        description: `${role === "pros" ? "찬성" : role === "cons" ? "반대" : "참여자"} ${
+          isTeamLeader ? "팀 리더" : "팀원"
+        }로 참여합니다.`,
       })
     } catch (error) {
       console.error("Error joining discussion:", error)
@@ -277,19 +305,21 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   }
 
   const handleSendMessage = async () => {
-    if (!newMessage.trim() || !currentParticipant || !canSendMessage()) return
+    if (!newMessage.trim() || !currentParticipant) return
 
     setIsTyping(true)
     try {
-      const messageType = discussion.currentPhase.includes("opening")
-        ? "opening"
-        : discussion.currentPhase.includes("strategy")
-          ? "strategy"
-          : discussion.currentPhase.includes("rebuttal")
-            ? "rebuttal"
-            : discussion.currentPhase.includes("closing")
-              ? "closing"
-              : "comment"
+      const messageType = isStructuredDebate
+        ? currentPhase.includes("opening")
+          ? "opening"
+          : currentPhase.includes("strategy")
+            ? "strategy"
+            : currentPhase.includes("rebuttal")
+              ? "rebuttal"
+              : currentPhase.includes("closing")
+                ? "closing"
+                : "comment"
+        : "argument"
 
       const message = {
         discussionId: discussion.id,
@@ -298,7 +328,7 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
         content: newMessage,
         timestamp: serverTimestamp(),
         role: currentParticipant.role,
-        phase: discussion.currentPhase,
+        phase: isStructuredDebate ? currentPhase : undefined,
         messageType,
         likes: 0,
         likedBy: [],
@@ -323,7 +353,7 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   }
 
   const handleFinalVote = async (vote: "pros" | "cons" | "draw") => {
-    if (!isObserver || discussion.currentPhase !== "voting") return
+    if (!isObserver) return
 
     try {
       const voteData = {
@@ -359,52 +389,72 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
   }
 
   const getPhaseProgress = () => {
-    if (!phaseTimeRemaining || !discussion.phaseTimeLimit) return 100
-    const totalTime = discussion.phaseTimeLimit * 60 * 1000
+    if (!phaseTimeRemaining || !phaseTimeLimit) return 100
+    const totalTime = phaseTimeLimit * 60 * 1000
     return ((totalTime - phaseTimeRemaining) / totalTime) * 100
   }
 
-  const currentPhaseInfo = PHASE_INFO[discussion.currentPhase]
+  const currentPhaseInfo = PHASE_INFO[currentPhase] || PHASE_INFO.waiting
   const PhaseIcon = currentPhaseInfo.icon
 
-  // 현재 단계의 메시지만 필터링
-  const currentPhaseMessages = messages.filter((m) => m.phase === discussion.currentPhase)
+  // 현재 단계의 메시지만 필터링 (체계적 토론인 경우)
+  const displayMessages = isStructuredDebate ? messages.filter((m) => m.phase === currentPhase || !m.phase) : messages
 
   const renderJoinOptions = () => {
-    const prosCount = discussion.participants.filter((p) => p.role === "pros").length
-    const consCount = discussion.participants.filter((p) => p.role === "cons").length
+    if (discussion.type === "pros-cons") {
+      const prosCount = discussion.participants.filter((p) => p.role === "pros").length
+      const consCount = discussion.participants.filter((p) => p.role === "cons").length
+
+      return (
+        <div className="space-y-4">
+          <p className="text-center text-muted-foreground">팀을 선택하여 토론에 참여하세요</p>
+          <div className="grid grid-cols-2 gap-4">
+            <Button
+              onClick={() => handleJoinDiscussion("pros")}
+              className="bg-green-600 hover:bg-green-700"
+              disabled={discussion.maxParticipants && prosCount >= discussion.maxParticipants / 2}
+            >
+              <ThumbsUp className="h-4 w-4 mr-2" />
+              찬성 팀 ({prosCount}명)
+              {prosCount === 0 && <Crown className="h-3 w-3 ml-1" />}
+            </Button>
+            <Button
+              onClick={() => handleJoinDiscussion("cons")}
+              className="bg-red-600 hover:bg-red-700"
+              disabled={discussion.maxParticipants && consCount >= discussion.maxParticipants / 2}
+            >
+              <ThumbsDown className="h-4 w-4 mr-2" />
+              반대 팀 ({consCount}명)
+              {consCount === 0 && <Crown className="h-3 w-3 ml-1" />}
+            </Button>
+          </div>
+          {canObserve && (
+            <div className="text-center">
+              <Button variant="outline" onClick={handleJoinAsObserver}>
+                <Eye className="h-4 w-4 mr-2" />
+                참관자로 참여
+              </Button>
+            </div>
+          )}
+        </div>
+      )
+    }
 
     return (
       <div className="space-y-4">
-        <p className="text-center text-muted-foreground">팀을 선택하여 토론에 참여하세요</p>
-        <div className="grid grid-cols-2 gap-4">
-          <Button
-            onClick={() => handleJoinDiscussion("pros")}
-            className="bg-green-600 hover:bg-green-700"
-            disabled={discussion.maxParticipants && prosCount >= discussion.maxParticipants / 2}
-          >
-            <ThumbsUp className="h-4 w-4 mr-2" />
-            찬성 팀 ({prosCount}명)
-            {prosCount === 0 && <Crown className="h-3 w-3 ml-1" />}
+        <p className="text-center text-muted-foreground">토론에 참여하세요</p>
+        <div className="flex gap-4 justify-center">
+          <Button onClick={() => handleJoinDiscussion("participant")}>
+            <MessageSquare className="h-4 w-4 mr-2" />
+            토론 참여하기
           </Button>
-          <Button
-            onClick={() => handleJoinDiscussion("cons")}
-            className="bg-red-600 hover:bg-red-700"
-            disabled={discussion.maxParticipants && consCount >= discussion.maxParticipants / 2}
-          >
-            <ThumbsDown className="h-4 w-4 mr-2" />
-            반대 팀 ({consCount}명)
-            {consCount === 0 && <Crown className="h-3 w-3 ml-1" />}
-          </Button>
-        </div>
-        {canObserve && (
-          <div className="text-center">
+          {canObserve && (
             <Button variant="outline" onClick={handleJoinAsObserver}>
               <Eye className="h-4 w-4 mr-2" />
               참관자로 참여
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     )
   }
@@ -423,37 +473,42 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
               <CardDescription className="mt-2">{discussion.description}</CardDescription>
             </div>
             <div className="flex gap-2">
+              <Badge
+                variant={
+                  discussion.status === "active" ? "default" : discussion.status === "waiting" ? "secondary" : "outline"
+                }
+              >
+                {discussion.status === "waiting" ? "대기중" : discussion.status === "active" ? "진행중" : "종료됨"}
+              </Badge>
+              <Badge variant="outline">{discussion.type}</Badge>
               <Badge variant="outline">{discussion.category}</Badge>
             </div>
           </div>
 
-          {/* 현재 단계 표시 */}
-          <div className="mt-4">
-            <div
-              className="flex items-center gap-3 p-4 rounded-lg"
-              style={{ backgroundColor: `${currentPhaseInfo.color}20` }}
-            >
-              <div className={`p-2 rounded-full ${currentPhaseInfo.color} text-white`}>
-                <PhaseIcon className="h-5 w-5" />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-lg">{currentPhaseInfo.name}</h3>
-                <p className="text-sm text-muted-foreground">{currentPhaseInfo.description}</p>
-              </div>
-              {phaseTimeRemaining !== null &&
-                discussion.currentPhase !== "waiting" &&
-                discussion.currentPhase !== "ended" && (
+          {/* 체계적 토론인 경우에만 단계 표시 */}
+          {isStructuredDebate && (
+            <div className="mt-4">
+              <div
+                className="flex items-center gap-3 p-4 rounded-lg"
+                style={{ backgroundColor: `${currentPhaseInfo.color}20` }}
+              >
+                <div className={`p-2 rounded-full ${currentPhaseInfo.color} text-white`}>
+                  <PhaseIcon className="h-5 w-5" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-lg">{currentPhaseInfo.name}</h3>
+                  <p className="text-sm text-muted-foreground">{currentPhaseInfo.description}</p>
+                </div>
+                {phaseTimeRemaining !== null && currentPhase !== "waiting" && currentPhase !== "ended" && (
                   <div className="text-right">
                     <div className="font-mono text-lg font-bold">{formatTime(phaseTimeRemaining)}</div>
                     <div className="text-xs text-muted-foreground">남은 시간</div>
                   </div>
                 )}
-            </div>
+              </div>
 
-            {/* 진행률 바 */}
-            {phaseTimeRemaining !== null &&
-              discussion.currentPhase !== "waiting" &&
-              discussion.currentPhase !== "ended" && (
+              {/* 진행률 바 */}
+              {phaseTimeRemaining !== null && currentPhase !== "waiting" && currentPhase !== "ended" && (
                 <div className="mt-2">
                   <Progress value={getPhaseProgress()} className="h-2" />
                   {phaseTimeRemaining < 30000 && (
@@ -465,18 +520,19 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
                   )}
                 </div>
               )}
-          </div>
+            </div>
+          )}
 
           {/* 토론 제어 버튼 (생성자만) */}
           {isCreator && (
             <div className="flex gap-2 mt-4">
-              {discussion.currentPhase === "waiting" && (
+              {discussion.status === "waiting" && (
                 <Button onClick={handleStartDiscussion} className="bg-green-600 hover:bg-green-700">
                   <Play className="h-4 w-4 mr-2" />
                   토론 시작하기
                 </Button>
               )}
-              {discussion.currentPhase !== "waiting" && discussion.currentPhase !== "ended" && (
+              {isStructuredDebate && currentPhase !== "waiting" && currentPhase !== "ended" && (
                 <Button onClick={handleNextPhase} variant="outline">
                   <ArrowRight className="h-4 w-4 mr-2" />
                   다음 단계로
@@ -514,20 +570,20 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <MessageSquare className="h-5 w-5" />
-                {currentPhaseInfo.name} - 토론 내용
+                {isStructuredDebate ? `${currentPhaseInfo.name} - 토론 내용` : "토론 내용"}
               </CardTitle>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-96 mb-4">
                 <div className="space-y-4">
-                  {currentPhaseMessages.length === 0 ? (
+                  {displayMessages.length === 0 ? (
                     <div className="text-center text-muted-foreground py-8">
-                      {discussion.currentPhase === "waiting"
+                      {discussion.status === "waiting"
                         ? "토론이 시작되면 메시지가 표시됩니다."
-                        : "아직 이 단계에서 메시지가 없습니다."}
+                        : "아직 메시지가 없습니다. 첫 번째 의견을 남겨보세요!"}
                     </div>
                   ) : (
-                    currentPhaseMessages.map((message) => (
+                    displayMessages.map((message) => (
                       <div key={message.id} className="flex items-start gap-3 p-3 rounded-lg hover:bg-muted/50">
                         <Avatar className="h-8 w-8">
                           <AvatarFallback>{message.username[0]}</AvatarFallback>
@@ -535,8 +591,17 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{message.username}</span>
-                            <Badge variant={message.role === "pros" ? "default" : "destructive"} className="text-xs">
-                              {message.role === "pros" ? "찬성" : "반대"}
+                            <Badge
+                              variant={
+                                message.role === "pros"
+                                  ? "default"
+                                  : message.role === "cons"
+                                    ? "destructive"
+                                    : "secondary"
+                              }
+                              className="text-xs"
+                            >
+                              {message.role === "pros" ? "찬성" : message.role === "cons" ? "반대" : "참여자"}
                             </Badge>
                             {discussion.participants.find((p) => p.userId === message.userId)?.isTeamLeader && (
                               <Crown className="h-3 w-3 text-yellow-500" />
@@ -556,27 +621,18 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
               {/* 메시지 입력 */}
               {canSendMessage() && (
                 <div className="space-y-2">
-                  {/* 단계별 안내 메시지 */}
-                  <div className="text-xs text-muted-foreground p-2 bg-muted rounded">
-                    {discussion.currentPhase.includes("opening") && "주장과 근거를 명확히 제시해주세요."}
-                    {discussion.currentPhase.includes("strategy") &&
-                      "팀 내부에서만 보이는 메시지입니다. 전략을 논의하세요."}
-                    {discussion.currentPhase.includes("rebuttal") && "상대방의 주장에 논리적으로 반박해주세요."}
-                    {discussion.currentPhase.includes("closing") && "최종 주장을 정리하여 제시해주세요."}
-                  </div>
+                  {/* 체계적 토론인 경우 단계별 안내 메시지 */}
+                  {isStructuredDebate && (
+                    <div className="text-xs text-muted-foreground p-2 bg-muted rounded">
+                      {currentPhase.includes("opening") && "주장과 근거를 명확히 제시해주세요."}
+                      {currentPhase.includes("strategy") && "팀 내부에서만 보이는 메시지입니다. 전략을 논의하세요."}
+                      {currentPhase.includes("rebuttal") && "상대방의 주장에 논리적으로 반박해주세요."}
+                      {currentPhase.includes("closing") && "최종 주장을 정리하여 제시해주세요."}
+                    </div>
+                  )}
 
                   <Textarea
-                    placeholder={
-                      discussion.currentPhase.includes("opening")
-                        ? "주장과 근거를 입력하세요..."
-                        : discussion.currentPhase.includes("strategy")
-                          ? "팀 전략을 논의하세요..."
-                          : discussion.currentPhase.includes("rebuttal")
-                            ? "반박 논리를 입력하세요..."
-                            : discussion.currentPhase.includes("closing")
-                              ? "최종 변론을 입력하세요..."
-                              : "의견을 입력하세요..."
-                    }
+                    placeholder="의견을 입력하세요..."
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
                     onKeyDown={(e) => {
@@ -608,14 +664,19 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
                 </div>
               )}
 
-              {!canSendMessage() &&
-                isParticipant &&
-                discussion.currentPhase !== "waiting" &&
-                discussion.currentPhase !== "ended" && (
-                  <div className="text-center text-muted-foreground py-4">
-                    현재 단계에서는 메시지를 보낼 수 없습니다.
-                  </div>
-                )}
+              {!canSendMessage() && isParticipant && discussion.status === "active" && (
+                <div className="text-center text-muted-foreground py-4">
+                  {isStructuredDebate ? "현재 단계에서는 메시지를 보낼 수 없습니다." : "메시지를 보낼 수 있습니다."}
+                </div>
+              )}
+
+              {discussion.status === "waiting" && isParticipant && (
+                <div className="text-center text-muted-foreground py-4">토론이 시작되면 메시지를 보낼 수 있습니다.</div>
+              )}
+
+              {discussion.status === "ended" && (
+                <div className="text-center text-muted-foreground py-4">토론이 종료되었습니다.</div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -627,63 +688,81 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Users className="h-5 w-5" />
-                참여자
+                참여자 ({discussion.participants.length}명)
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {/* 찬성 팀 */}
-                <div>
-                  <h4 className="font-medium text-green-600 mb-2 flex items-center gap-2">
-                    <ThumbsUp className="h-4 w-4" />
-                    찬성 팀 ({discussion.participants.filter((p) => p.role === "pros").length}명)
-                  </h4>
-                  <div className="space-y-2 ml-6">
-                    {discussion.participants
-                      .filter((p) => p.role === "pros")
-                      .map((participant) => (
-                        <div key={participant.userId} className="flex items-center gap-2">
-                          <Avatar className="h-6 w-6">
-                            <AvatarFallback>{participant.username[0]}</AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm flex-1">{participant.username}</span>
-                          {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
-                          {participant.userId === discussion.createdBy && (
-                            <Badge variant="outline" className="text-xs">
-                              생성자
-                            </Badge>
-                          )}
-                        </div>
-                      ))}
+              {discussion.type === "pros-cons" ? (
+                <div className="space-y-4">
+                  {/* 찬성 팀 */}
+                  <div>
+                    <h4 className="font-medium text-green-600 mb-2 flex items-center gap-2">
+                      <ThumbsUp className="h-4 w-4" />
+                      찬성 팀 ({discussion.participants.filter((p) => p.role === "pros").length}명)
+                    </h4>
+                    <div className="space-y-2 ml-6">
+                      {discussion.participants
+                        .filter((p) => p.role === "pros")
+                        .map((participant) => (
+                          <div key={participant.userId} className="flex items-center gap-2">
+                            <Avatar className="h-6 w-6">
+                              <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                            </Avatar>
+                            <span className="text-sm flex-1">{participant.username}</span>
+                            {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
+                            {participant.userId === discussion.createdBy && (
+                              <Badge variant="outline" className="text-xs">
+                                생성자
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                    </div>
                   </div>
-                </div>
 
-                {/* 반대 팀 */}
-                <div>
-                  <h4 className="font-medium text-red-600 mb-2 flex items-center gap-2">
-                    <ThumbsDown className="h-4 w-4" />
-                    반대 팀 ({discussion.participants.filter((p) => p.role === "cons").length}명)
-                  </h4>
-                  <div className="space-y-2 ml-6">
-                    {discussion.participants
-                      .filter((p) => p.role === "cons")
-                      .map((participant) => (
-                        <div key={participant.userId} className="flex items-center gap-2">
-                          <Avatar className="h-6 w-6">
-                            <AvatarFallback>{participant.username[0]}</AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm flex-1">{participant.username}</span>
-                          {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
-                          {participant.userId === discussion.createdBy && (
-                            <Badge variant="outline" className="text-xs">
-                              생성자
-                            </Badge>
-                          )}
-                        </div>
-                      ))}
+                  {/* 반대 팀 */}
+                  <div>
+                    <h4 className="font-medium text-red-600 mb-2 flex items-center gap-2">
+                      <ThumbsDown className="h-4 w-4" />
+                      반대 팀 ({discussion.participants.filter((p) => p.role === "cons").length}명)
+                    </h4>
+                    <div className="space-y-2 ml-6">
+                      {discussion.participants
+                        .filter((p) => p.role === "cons")
+                        .map((participant) => (
+                          <div key={participant.userId} className="flex items-center gap-2">
+                            <Avatar className="h-6 w-6">
+                              <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                            </Avatar>
+                            <span className="text-sm flex-1">{participant.username}</span>
+                            {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
+                            {participant.userId === discussion.createdBy && (
+                              <Badge variant="outline" className="text-xs">
+                                생성자
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                    </div>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-3">
+                  {discussion.participants.length === 0 ? (
+                    <div className="text-center text-muted-foreground text-sm">아직 참여자가 없습니다.</div>
+                  ) : (
+                    discussion.participants.map((participant) => (
+                      <div key={participant.userId} className="flex items-center gap-2">
+                        <Avatar className="h-6 w-6">
+                          <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm flex-1">{participant.username}</span>
+                        {participant.userId === discussion.createdBy && <Crown className="h-3 w-3 text-yellow-500" />}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -712,37 +791,43 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
           )}
 
           {/* 최종 투표 */}
-          {isObserver && discussion.currentPhase === "voting" && !finalVote && (
-            <Card>
-              <CardHeader>
-                <CardTitle>최종 투표</CardTitle>
-                <CardDescription>어느 팀이 더 설득력 있었나요?</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <Textarea
-                    placeholder="투표 이유를 간단히 적어주세요 (선택사항)"
-                    value={voteReasoning}
-                    onChange={(e) => setVoteReasoning(e.target.value)}
-                    rows={3}
-                  />
-                  <div className="space-y-2">
-                    <Button onClick={() => handleFinalVote("pros")} className="w-full bg-green-600 hover:bg-green-700">
-                      <ThumbsUp className="h-4 w-4 mr-2" />
-                      찬성 팀 승리
-                    </Button>
-                    <Button onClick={() => handleFinalVote("cons")} className="w-full bg-red-600 hover:bg-red-700">
-                      <ThumbsDown className="h-4 w-4 mr-2" />
-                      반대 팀 승리
-                    </Button>
-                    <Button onClick={() => handleFinalVote("draw")} variant="outline" className="w-full">
-                      무승부
-                    </Button>
+          {isObserver &&
+            ((isStructuredDebate && currentPhase === "voting") ||
+              (!isStructuredDebate && discussion.status === "ended")) &&
+            !finalVote && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>최종 투표</CardTitle>
+                  <CardDescription>어느 팀이 더 설득력 있었나요?</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <Textarea
+                      placeholder="투표 이유를 간단히 적어주세요 (선택사항)"
+                      value={voteReasoning}
+                      onChange={(e) => setVoteReasoning(e.target.value)}
+                      rows={3}
+                    />
+                    <div className="space-y-2">
+                      <Button
+                        onClick={() => handleFinalVote("pros")}
+                        className="w-full bg-green-600 hover:bg-green-700"
+                      >
+                        <ThumbsUp className="h-4 w-4 mr-2" />
+                        찬성 팀 승리
+                      </Button>
+                      <Button onClick={() => handleFinalVote("cons")} className="w-full bg-red-600 hover:bg-red-700">
+                        <ThumbsDown className="h-4 w-4 mr-2" />
+                        반대 팀 승리
+                      </Button>
+                      <Button onClick={() => handleFinalVote("draw")} variant="outline" className="w-full">
+                        무승부
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+                </CardContent>
+              </Card>
+            )}
 
           {/* 투표 결과 */}
           {discussion.finalVotes && discussion.finalVotes.length > 0 && (
@@ -810,7 +895,9 @@ export default function DiscussionRoom({ discussion, messages, currentUser }: Di
 
 // 비로그인 사용자를 위한 컴포넌트
 function GuestView({ discussion, messages }: { discussion: Discussion; messages: Message[] }) {
-  const currentPhaseInfo = PHASE_INFO[discussion.currentPhase]
+  const currentPhase = discussion.currentPhase || "waiting"
+  const isStructuredDebate = discussion.type === "pros-cons" && discussion.currentPhase
+  const currentPhaseInfo = PHASE_INFO[currentPhase] || PHASE_INFO.waiting
   const PhaseIcon = currentPhaseInfo.icon
 
   return (
@@ -823,25 +910,35 @@ function GuestView({ discussion, messages }: { discussion: Discussion; messages:
               <CardDescription className="mt-2">{discussion.description}</CardDescription>
             </div>
             <div className="flex gap-2">
+              <Badge
+                variant={
+                  discussion.status === "active" ? "default" : discussion.status === "waiting" ? "secondary" : "outline"
+                }
+              >
+                {discussion.status === "waiting" ? "대기중" : discussion.status === "active" ? "진행중" : "종료됨"}
+              </Badge>
+              <Badge variant="outline">{discussion.type}</Badge>
               <Badge variant="outline">{discussion.category}</Badge>
             </div>
           </div>
 
-          {/* 현재 단계 표시 */}
-          <div className="mt-4">
-            <div
-              className="flex items-center gap-3 p-4 rounded-lg"
-              style={{ backgroundColor: `${currentPhaseInfo.color}20` }}
-            >
-              <div className={`p-2 rounded-full ${currentPhaseInfo.color} text-white`}>
-                <PhaseIcon className="h-5 w-5" />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-lg">{currentPhaseInfo.name}</h3>
-                <p className="text-sm text-muted-foreground">{currentPhaseInfo.description}</p>
+          {/* 체계적 토론인 경우에만 현재 단계 표시 */}
+          {isStructuredDebate && (
+            <div className="mt-4">
+              <div
+                className="flex items-center gap-3 p-4 rounded-lg"
+                style={{ backgroundColor: `${currentPhaseInfo.color}20` }}
+              >
+                <div className={`p-2 rounded-full ${currentPhaseInfo.color} text-white`}>
+                  <PhaseIcon className="h-5 w-5" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-lg">{currentPhaseInfo.name}</h3>
+                  <p className="text-sm text-muted-foreground">{currentPhaseInfo.description}</p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </CardHeader>
       </Card>
 
@@ -861,13 +958,13 @@ function GuestView({ discussion, messages }: { discussion: Discussion; messages:
         <div className="lg:col-span-3">
           <Card>
             <CardHeader>
-              <CardTitle>{currentPhaseInfo.name} - 토론 내용</CardTitle>
+              <CardTitle>{isStructuredDebate ? `${currentPhaseInfo.name} - 토론 내용` : "토론 내용"}</CardTitle>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-96">
                 <div className="space-y-4">
                   {messages
-                    .filter((m) => m.phase === discussion.currentPhase)
+                    .filter((m) => (isStructuredDebate ? m.phase === currentPhase || !m.phase : true))
                     .map((message) => (
                       <div key={message.id} className="flex items-start gap-3">
                         <Avatar className="h-8 w-8">
@@ -876,8 +973,17 @@ function GuestView({ discussion, messages }: { discussion: Discussion; messages:
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{message.username}</span>
-                            <Badge variant={message.role === "pros" ? "default" : "destructive"} className="text-xs">
-                              {message.role === "pros" ? "찬성" : "반대"}
+                            <Badge
+                              variant={
+                                message.role === "pros"
+                                  ? "default"
+                                  : message.role === "cons"
+                                    ? "destructive"
+                                    : "secondary"
+                              }
+                              className="text-xs"
+                            >
+                              {message.role === "pros" ? "찬성" : message.role === "cons" ? "반대" : "참여자"}
                             </Badge>
                             <span className="text-xs text-muted-foreground">
                               {message.timestamp?.toLocaleTimeString()}
@@ -899,40 +1005,53 @@ function GuestView({ discussion, messages }: { discussion: Discussion; messages:
               <CardTitle>참여자</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                <div>
-                  <h4 className="font-medium text-green-600 mb-2">찬성 팀</h4>
-                  <div className="space-y-2 ml-4">
-                    {discussion.participants
-                      .filter((p) => p.role === "pros")
-                      .map((participant) => (
-                        <div key={participant.userId} className="flex items-center gap-2">
-                          <Avatar className="h-6 w-6">
-                            <AvatarFallback>{participant.username[0]}</AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm">{participant.username}</span>
-                          {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
-                        </div>
-                      ))}
+              {discussion.type === "pros-cons" ? (
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-medium text-green-600 mb-2">찬성 팀</h4>
+                    <div className="space-y-2 ml-4">
+                      {discussion.participants
+                        .filter((p) => p.role === "pros")
+                        .map((participant) => (
+                          <div key={participant.userId} className="flex items-center gap-2">
+                            <Avatar className="h-6 w-6">
+                              <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                            </Avatar>
+                            <span className="text-sm">{participant.username}</span>
+                            {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="font-medium text-red-600 mb-2">반대 팀</h4>
+                    <div className="space-y-2 ml-4">
+                      {discussion.participants
+                        .filter((p) => p.role === "cons")
+                        .map((participant) => (
+                          <div key={participant.userId} className="flex items-center gap-2">
+                            <Avatar className="h-6 w-6">
+                              <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                            </Avatar>
+                            <span className="text-sm">{participant.username}</span>
+                            {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
+                          </div>
+                        ))}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <h4 className="font-medium text-red-600 mb-2">반대 팀</h4>
-                  <div className="space-y-2 ml-4">
-                    {discussion.participants
-                      .filter((p) => p.role === "cons")
-                      .map((participant) => (
-                        <div key={participant.userId} className="flex items-center gap-2">
-                          <Avatar className="h-6 w-6">
-                            <AvatarFallback>{participant.username[0]}</AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm">{participant.username}</span>
-                          {participant.isTeamLeader && <Crown className="h-3 w-3 text-yellow-500" />}
-                        </div>
-                      ))}
-                  </div>
+              ) : (
+                <div className="space-y-2">
+                  {discussion.participants.map((participant) => (
+                    <div key={participant.userId} className="flex items-center gap-2">
+                      <Avatar className="h-6 w-6">
+                        <AvatarFallback>{participant.username[0]}</AvatarFallback>
+                      </Avatar>
+                      <span className="text-sm">{participant.username}</span>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              )}
             </CardContent>
           </Card>
         </div>

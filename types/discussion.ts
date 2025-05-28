@@ -23,22 +23,22 @@ export interface Discussion {
   description: string
   type: DiscussionType
   status: DiscussionStatus
-  currentPhase: DebatePhase
+  currentPhase?: DebatePhase // 기존 데이터 호환을 위해 optional
   createdBy: string
   createdAt: Date
   startedAt?: Date
   endedAt?: Date
   allowObservers: boolean
   maxParticipants?: number
-  timeLimit?: number // 전체 토론 시간 제한
-  phaseTimeLimit: number // 각 단계별 시간 제한 (분)
+  timeLimit?: number // 전체 토론 시간 제한 (기존 필드)
+  phaseTimeLimit?: number // 각 단계별 시간 제한 (새 필드, optional)
   category: string
   participants: Participant[]
   observers: string[]
   finalVotes?: FinalVote[]
   winner?: "pros" | "cons" | "draw"
   phaseStartTime?: Date
-  phaseMessages: { [key in DebatePhase]?: string[] } // 각 단계별 메시지 ID 저장
+  phaseMessages?: { [key in DebatePhase]?: string[] } // optional
 }
 
 export interface Participant {
@@ -46,7 +46,7 @@ export interface Participant {
   username: string
   role: ParticipantRole
   joinedAt: Date
-  isTeamLeader?: boolean // 팀 대표 (입론, 최종변론 담당)
+  isTeamLeader?: boolean // optional for backward compatibility
 }
 
 export interface Message {
@@ -57,8 +57,8 @@ export interface Message {
   content: string
   timestamp: Date
   role: ParticipantRole
-  phase: DebatePhase
-  messageType: "opening" | "strategy" | "rebuttal" | "closing" | "comment"
+  phase?: DebatePhase // optional for backward compatibility
+  messageType: "argument" | "rebuttal" | "comment" | "opening" | "strategy" | "closing"
   replyTo?: string
   likes?: number
   likedBy?: string[]
@@ -68,7 +68,7 @@ export interface FinalVote {
   userId: string
   vote: "pros" | "cons" | "draw"
   timestamp: Date
-  reasoning?: string // 투표 이유
+  reasoning?: string
 }
 
 export interface User {
